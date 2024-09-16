@@ -1,101 +1,143 @@
-import Image from "next/image";
+"use client";
+import { useEffect, useRef, useState } from "react";
+import socket from "@/socket/socket";
+function HomePage() {
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const iceServers = {
+    iceServers: [
+      {
+        urls: "stun:stun.l.google.com:19302",
+      },
+    ],
+  };
+  // Tạo PeerConnection
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection(iceServers);
 
-export default function Home() {
+    // Lắng nghe sự kiện ICE candidate
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit("candidate", event.candidate, 1);
+      }
+    };
+
+    // Khi nhận được luồng media từ peer khác
+    pc.ontrack = (event: RTCTrackEvent) => {
+      console.log("new stream: " + event.streams[0]);
+      setRemoteStream(event.streams[0]);
+      if (remoteVideoRef.current)
+        remoteVideoRef.current.srcObject = event.streams[0];
+      console.log(remoteVideoRef.current);
+    };
+
+    return pc;
+  };
+  const startCall = async () => {
+    console.log("start call");
+    socket.emit("join-room", 1);
+  };
+  useEffect(() => {
+    const handleOffer = async (offer: any) => {
+      console.log("Offer:", offer);
+      await peerConnection.current?.setRemoteDescription(
+        new RTCSessionDescription(offer)
+      );
+      const answer = await peerConnection.current?.createAnswer();
+      await peerConnection.current?.setLocalDescription(answer);
+      socket.emit("answer", answer, 1);
+    };
+    const handleConnected = async (userId: any) => {
+      console.log("Connected to user", userId);
+      const offer = await peerConnection.current?.createOffer();
+      await peerConnection.current?.setLocalDescription(offer);
+      socket.emit("offer", offer, 1);
+    };
+    // Xử lý khi nhận được answer từ peer
+    const handleAnswer = async (answer: any) => {
+      console.log("Answer:", answer);
+      if (peerConnection.current?.signalingState === "stable") {
+        console.error(
+          "RTCPeerConnection is in stable state. Cannot set local description."
+        );
+        return;
+      }
+      await peerConnection.current?.setRemoteDescription(
+        new RTCSessionDescription(answer)
+      );
+    };
+
+    // Xử lý khi nhận được candidate ICE từ peer
+    const handleCandidate = async (candidate: any) => {
+      console.log("Candidate:", candidate);
+      await peerConnection.current?.addIceCandidate(
+        new RTCIceCandidate(candidate)
+      );
+    };
+
+    // Khi người dùng muốn bắt đầu cuộc gọi video
+
+    // Truy cập camera và microphone
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        console.log("current stream" + stream);
+        setStream(stream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          console.log(localVideoRef.current);
+        }
+        peerConnection.current = createPeerConnection();
+
+        // Thêm track (audio và video) vào PeerConnection
+        stream.getTracks().forEach((track) => {
+          if (peerConnection.current)
+            peerConnection.current.addTrack(track, stream);
+        });
+        if (!socket.hasListeners("user-connected")) {
+          socket.on("user-connected", handleConnected);
+        }
+        // Lắng nghe tín hiệu từ server signaling
+        if (!socket.hasListeners("offer")) {
+          socket.on("offer", handleOffer);
+        }
+        if (!socket.hasListeners("answer")) {
+          socket.on("answer", handleAnswer);
+        }
+
+        if (!socket.hasListeners("candidate")) {
+          socket.on("candidate", handleCandidate);
+        }
+      })
+      .catch((error) => console.error("Error accessing media devices.", error));
+
+    return () => {
+      socket.off("user-connected", handleConnected);
+      socket.off("offer", handleOffer);
+      socket.off("answer", handleAnswer);
+      socket.off("candidate", handleCandidate);
+    };
+  }, []);
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+    <div className="bg-slate-500 h-[1000px]">
+      <h1>Home Page</h1>
+      <video
+        ref={localVideoRef}
+        autoPlay
+        playsInline
+        muted
+      />
+      <video
+        ref={remoteVideoRef}
+        autoPlay
+        playsInline
+      />
+      <button onClick={startCall}>Start Call</button>
     </div>
   );
 }
+
+export default HomePage;
