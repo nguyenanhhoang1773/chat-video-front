@@ -26,8 +26,6 @@ function HomePage() {
   }
   const firestore = getFirestore();
   const pc = useRef(new RTCPeerConnection(servers));
-  const [localStream, setLocalStream] = useState(false);
-  const [remoteStream, setRemoteStream] = useState(false);
   const roomRef = useRef<HTMLInputElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -40,7 +38,7 @@ function HomePage() {
       video: true,
       audio: true,
     });
-    let rtStream = new MediaStream();
+    const rtStream = new MediaStream();
 
     lcStream.getTracks().forEach((track) => {
       pc.current.addTrack(track, lcStream);
