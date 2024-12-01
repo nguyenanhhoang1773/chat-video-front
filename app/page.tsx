@@ -1,221 +1,208 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import socket from "@/socket/socket";
+import firebaseConfig from "./firebase";
+import {
+  collection,
+  doc,
+  addDoc,
+  setDoc,
+  getDoc,
+  onSnapshot,
+  getFirestore,
+  updateDoc,
+} from "firebase/firestore";
+import { initializeApp, getApps } from "firebase/app";
+const servers = {
+  iceServers: [
+    {
+      urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
+    },
+  ],
+  iceCandidatePoolSize: 10,
+};
 function HomePage() {
-  const [stream, setStream] = useState(false);
+  if (!getApps().length) {
+    initializeApp(firebaseConfig);
+  }
+  const firestore = getFirestore();
+  const pc = useRef(new RTCPeerConnection(servers));
+  const [localStream, setLocalStream] = useState(false);
   const [remoteStream, setRemoteStream] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [room, setRoom] = useState("");
   const roomRef = useRef<HTMLInputElement>(null);
-  const [remoteStreamSource, setRemoteStreamSource] =
-    useState<MediaStream | null>(null);
-  const peerConnection = useRef<RTCPeerConnection | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const iceServers = {
-    iceServers: [
-      {
-        urls: "stun:stun.l.google.com:19302",
-      },
-    ],
-  };
   // Tạo PeerConnection
-  const createPeerConnection = () => {
-    const pc = new RTCPeerConnection(iceServers);
-
-    // Lắng nghe sự kiện ICE candidate
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("candidate", event.candidate, roomRef.current?.value);
-      }
-    };
-
-    // Khi nhận được luồng media từ peer khác
-    pc.ontrack = (event: RTCTrackEvent) => {
-      console.log("new stream: " + event.streams[0]);
-      setRemoteStream(true);
-      setRemoteStreamSource(event.streams[0]);
-      console.log(remoteVideoRef.current);
-    };
-
-    return pc;
+  const initPC = () => {
+    pc.current = new RTCPeerConnection(servers);
   };
-  const switchVideoPartner = async () => {
-    // Tạo một RTCPeerConnection mới
-    const pc = new RTCPeerConnection(iceServers);
-
-    // Đăng ký các sự kiện cho peerConnection mới
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("ice-candidate", event.candidate);
-      }
-    };
-
-    pc.ontrack = (event: RTCTrackEvent) => {
-      console.log("new stream: " + event.streams[0]);
-      setRemoteStream(true);
-      setRemoteStreamSource(event.streams[0]);
-      console.log(remoteVideoRef.current);
-    };
-
-    // Lấy stream từ camera và microphone của người dùng
-    const localStream = await navigator.mediaDevices.getUserMedia({
+  const init = async () => {
+    const lcStream = await navigator.mediaDevices.getUserMedia({
       video: true,
       audio: true,
     });
+    let rtStream = new MediaStream();
 
-    // Thêm các track của localStream vào peerConnection
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-    return pc;
-  };
+    lcStream.getTracks().forEach((track) => {
+      pc.current.addTrack(track, lcStream);
+    });
+    pc.current.ontrack = (event) => {
+      event.streams[0].getTracks().forEach((track) => {
+        rtStream.addTrack(track);
+      });
+    };
 
-  useEffect(() => {
-    console.log("remoteVideoRef.current" + remoteVideoRef.current);
-    if (remoteVideoRef.current)
-      remoteVideoRef.current.srcObject = remoteStreamSource;
-    console.log("remoteStreamSource:" + remoteStreamSource);
-    console.log(remoteVideoRef.current);
-  }, [remoteStream]);
-  const startCall = async () => {
-    if (roomRef.current?.value) {
-      setRoom(roomRef.current?.value);
-      socket.emit("join-room", roomRef.current?.value);
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = lcStream;
     }
-    setConnected(true);
-    console.log("start call");
-  };
-
-  const stopCall = async () => {
-    console.log("click stop ");
-    socket.emit("disconnectRoom", roomRef.current?.value);
     if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
+      remoteVideoRef.current.srcObject = rtStream;
     }
-    setConnected(false);
-    setRemoteStream(false);
-    if (peerConnection.current) {
-      peerConnection.current.close(); // Đóng tất cả kết nối ICE, ngừng truyền dữ liệu
-      peerConnection.current = null; // Giải phóng đối tượng cũ
-    }
-    peerConnection.current = createPeerConnection();
-    const localStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
-    });
 
-    // Thêm các track của localStream vào peerConnection
-    localStream.getTracks().forEach((track) => {
-      if (peerConnection.current) {
-        peerConnection.current.addTrack(track, localStream);
+    // setLocalStream(true);
+    // setRemoteStream(true);
+
+    // callButton.disabled = false;
+    // answerButton.disabled = false;
+    // webcamButton.disabled = true;
+  };
+  const endCall = async () => {
+    if (roomRef.current) {
+      const callId = roomRef.current.value;
+      const callDoc = doc(collection(firestore, "calls"), callId);
+      await updateDoc(callDoc, { callEnded: true });
+      if (pc) {
+        pc.current.close();
+      }
+      if (roomRef.current) {
+        roomRef.current.value = "";
+      }
+      initPC();
+      init();
+    }
+  };
+  const handleCreateRoom = async () => {
+    // Reference Firestore collections for signaling
+    const callDoc = doc(collection(firestore, "calls"));
+    const offerCandidates = collection(callDoc, "offerCandidates");
+    const answerCandidates = collection(callDoc, "answerCandidates");
+
+    if (roomRef.current) {
+      roomRef.current.value = callDoc.id;
+    }
+    // Get candidates for caller, save to db
+
+    pc.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        addDoc(offerCandidates, event.candidate.toJSON());
+      }
+    };
+    // Create offer
+    const offerDescription = await pc.current.createOffer();
+    await pc.current.setLocalDescription(offerDescription);
+
+    const offer = {
+      sdp: offerDescription.sdp,
+      type: offerDescription.type,
+    };
+
+    await setDoc(callDoc, { offer });
+
+    // Listen for remote answer
+    onSnapshot(callDoc, (snapshot) => {
+      const data = snapshot.data();
+      if (!pc.current.currentRemoteDescription && data?.answer) {
+        const answerDescription = new RTCSessionDescription(data.answer);
+        pc.current.setRemoteDescription(answerDescription);
       }
     });
+    // When answered, add candidate to peer connection
+    onSnapshot(answerCandidates, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "added") {
+          const candidate = new RTCIceCandidate(change.doc.data());
+          pc.current.addIceCandidate(candidate);
+        }
+      });
+    });
+    onSnapshot(callDoc, (snapshot) => {
+      const data = snapshot.data();
+      if (data?.callEnded) {
+        console.log("Call has been ended by the other party.");
+        if (pc) {
+          pc.current.close();
+        }
+        if (roomRef.current) {
+          roomRef.current.value = "";
+        }
+        initPC();
+        init();
+        // Thêm logic để xử lý giao diện khi kết thúc cuộc gọi
+      }
+    });
+    // hangupButton.disabled = false;
+  };
+  const handleCall = async () => {
+    if (roomRef.current) {
+      const callId = roomRef.current.value;
+      const callDoc = doc(collection(firestore, "calls"), callId);
+      const answerCandidates = collection(callDoc, "answerCandidates");
+      const offerCandidates = collection(callDoc, "offerCandidates");
+      pc.current.onicecandidate = (event) => {
+        if (event.candidate) {
+          addDoc(answerCandidates, event.candidate.toJSON());
+        }
+      };
+
+      const callSnapshot = await getDoc(callDoc);
+      const callData = callSnapshot.data();
+      if (callData) {
+        const offerDescription = callData.offer;
+        await pc.current.setRemoteDescription(
+          new RTCSessionDescription(offerDescription)
+        );
+      }
+
+      const answerDescription = await pc.current.createAnswer();
+      await pc.current.setLocalDescription(answerDescription);
+
+      const answer = {
+        type: answerDescription.type,
+        sdp: answerDescription.sdp,
+      };
+
+      await updateDoc(callDoc, { answer });
+
+      onSnapshot(offerCandidates, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "added") {
+            const data = change.doc.data();
+            pc.current
+              .addIceCandidate(new RTCIceCandidate(data))
+              .catch((error) => {
+                console.error("Error adding ICE candidate:", error);
+              });
+          }
+        });
+      });
+      onSnapshot(callDoc, (snapshot) => {
+        const data = snapshot.data();
+        if (data?.callEnded) {
+          console.log("Call has been ended by the other party.");
+          if (pc) {
+            pc.current.close();
+          }
+          if (roomRef.current) {
+            roomRef.current.value = "";
+          }
+          initPC();
+          init();
+          // Thêm logic để xử lý giao diện khi kết thúc cuộc gọi
+        }
+      });
+    }
   };
   useEffect(() => {
-    const handleOffer = async (offer: any) => {
-      console.log("Offer:", offer);
-      await peerConnection.current?.setRemoteDescription(
-        new RTCSessionDescription(offer)
-      );
-      const answer = await peerConnection.current?.createAnswer();
-      await peerConnection.current?.setLocalDescription(answer);
-      socket.emit("answer", answer, roomRef.current?.value);
-    };
-    const handleConnected = async (userId: any) => {
-      console.log("Connected to user", userId);
-      const offer = await peerConnection.current?.createOffer();
-      await peerConnection.current?.setLocalDescription(offer);
-      console.log(room);
-      socket.emit("offer", offer, roomRef.current?.value);
-    };
-    // Xử lý khi nhận được answer từ peer
-    const handleAnswer = async (answer: any) => {
-      console.log("Answer:", answer);
-      if (peerConnection.current?.signalingState === "stable") {
-        console.error(
-          "RTCPeerConnection is in stable state. Cannot set local description."
-        );
-        return;
-      }
-      await peerConnection.current?.setRemoteDescription(
-        new RTCSessionDescription(answer)
-      );
-    };
-
-    // Xử lý khi nhận được candidate ICE từ peer
-    const handleCandidate = async (candidate: any) => {
-      console.log("Candidate:", candidate);
-      await peerConnection.current?.addIceCandidate(
-        new RTCIceCandidate(candidate)
-      );
-    };
-
-    const handleDisconnect = async (socketId: any) => {
-      console.log("stop call" + socketId);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
-      setRemoteStream(false);
-      setConnected(false);
-      if (peerConnection.current) {
-        peerConnection.current.close(); // Đóng tất cả kết nối ICE, ngừng truyền dữ liệu
-        peerConnection.current = null; // Giải phóng đối tượng cũ
-      }
-      peerConnection.current = createPeerConnection();
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-
-      // Thêm các track của localStream vào peerConnection
-      localStream.getTracks().forEach((track) => {
-        if (peerConnection.current) {
-          peerConnection.current.addTrack(track, localStream);
-        }
-      });
-    };
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        console.log("current stream" + stream);
-        setStream(true);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          console.log(localVideoRef.current);
-        }
-        peerConnection.current = createPeerConnection();
-
-        // Thêm track (audio và video) vào PeerConnection
-        stream.getTracks().forEach((track) => {
-          if (peerConnection.current)
-            peerConnection.current.addTrack(track, stream);
-        });
-        if (!socket.hasListeners("user-connected")) {
-          socket.on("user-connected", handleConnected);
-        }
-        // Lắng nghe tín hiệu từ server signaling
-        if (!socket.hasListeners("offer")) {
-          socket.on("offer", handleOffer);
-        }
-        if (!socket.hasListeners("answer")) {
-          socket.on("answer", handleAnswer);
-        }
-
-        if (!socket.hasListeners("candidate")) {
-          socket.on("candidate", handleCandidate);
-        }
-        if (!socket.hasListeners("disconnectRoom")) {
-          socket.on("disconnectRoom", handleDisconnect);
-        }
-      })
-      .catch((error) => console.error("Error accessing media devices.", error));
-
-    return () => {
-      socket.off("user-connected", handleConnected);
-      socket.off("offer", handleOffer);
-      socket.off("answer", handleAnswer);
-      socket.off("candidate", handleCandidate);
-      socket.off("disconnectRoom", handleDisconnect);
-    };
+    init();
   }, []);
   return (
     <div className="bg-slate-500 h-[800px] py-[100px] flex flex-col  items-center">
@@ -223,62 +210,71 @@ function HomePage() {
         Chat Video App
       </p>
       <div className="flex gap-10 ">
-        {stream && (
-          <video
-            className="w-[376px] h-[282px] rounded-lg"
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-          />
-        )}
-        {!stream && (
-          <div className="w-[376px] h-[282px] bg-black flex justify-center items-center text-white rounded-lg">
-            waiting for connection...
+        {
+          <div className="w-[376px] h-[282px] rounded-lg relative">
+            <video
+              className="absolute z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+            />
+            (
+            <div className="absolute z-0 top-0 right-0 left-0 bottom-0 bg-black flex justify-center items-center text-white rounded-lg">
+              waiting for connection...
+            </div>
+            )
           </div>
-        )}
-        {remoteStream && (
-          <video
-            className="w-[376px] h-[282px] rounded-lg"
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            muted
-          />
-        )}
-        {!remoteStream && (
-          <div className="w-[376px] h-[282px] bg-black flex justify-center items-center text-white rounded-lg">
-            waiting for connection...
+        }
+
+        {
+          <div className="w-[376px] h-[282px] rounded-lg relative">
+            <video
+              className="absolute z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              muted
+            />
+            (
+            <div className="absolute z-0  top-0 right-0 left-0 bottom-0 bg-black flex justify-center items-center text-white rounded-lg">
+              waiting for connection...
+            </div>
+            )
           </div>
-        )}
+        }
       </div>
       <div className="mt-[20px]">
         <label className="mr-[4px] text-white text-[22px] font-[600] ">
-          Room:
+          idRoom:
         </label>
         <input
-          className="rounded-sm px-[4px] text-purple-800 w-[40px] text-end"
-          disabled={connected}
+          className="rounded-sm px-[4px] text-purple-800 w-[100px] text-end"
           ref={roomRef}
           type="text"
         />
       </div>
-      {connected && (
+
+      <div className="flex gap-4">
         <button
           className="p-2 bg-purple-600 font-[600] text-[30px] hover:opacity-80 text-white rounded-lg mt-[20px]"
-          onClick={stopCall}
+          onClick={handleCreateRoom}
         >
-          Stop Calling
+          Create Room
         </button>
-      )}
-      {!connected && (
         <button
           className="p-2 bg-purple-600 font-[600] text-[30px] hover:opacity-80 text-white rounded-lg mt-[20px]"
-          onClick={startCall}
+          onClick={handleCall}
         >
           Start Call
         </button>
-      )}
+        <button
+          className="p-2 bg-purple-600 font-[600] text-[30px] hover:opacity-80 text-white rounded-lg mt-[20px]"
+          onClick={endCall}
+        >
+          Stop Calling
+        </button>
+      </div>
     </div>
   );
 }
