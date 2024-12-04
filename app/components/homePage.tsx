@@ -203,15 +203,15 @@ function HomePage() {
     init();
   }, []);
   return (
-    <div className="bg-slate-500 h-[800px] py-[100px] flex flex-col  items-center">
+    <div className="bg-slate-500 min-h-[800px] phone:px-[10px] py-[100px] flex flex-col  items-center">
       <p className="text-white text-[36px]  font-[600] mb-[20px] ">
         Chat Video App
       </p>
-      <div className="flex gap-10 ">
+      <div className="flex flex-row phone:flex-col md:flex-row gap-10 ">
         {
           <div className="w-[376px] h-[282px] rounded-lg relative">
             <video
-              className="absolute z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
+              className="absolute w-[376px] h-[282px] z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
               ref={localVideoRef}
               autoPlay
               playsInline
@@ -228,14 +228,14 @@ function HomePage() {
         {
           <div className="w-[376px] h-[282px] rounded-lg relative">
             <video
-              className="absolute z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
+              className="absolute w-[376px] h-[282px] z-10 top-0 right-0 left-0 bottom-0 rounded-lg"
               ref={remoteVideoRef}
               autoPlay
               playsInline
               muted
             />
             (
-            <div className="absolute z-0  top-0 right-0 left-0 bottom-0 bg-black flex justify-center items-center text-white rounded-lg">
+            <div className="absolute z-0   top-0 right-0 left-0 bottom-0 bg-black flex justify-center items-center text-white rounded-lg">
               waiting for connection...
             </div>
             )
